@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+cd "$(dirname "$0")/.."
+
+[ -f .env ] || { echo "No .env — run: cp .env.example .env && edit it"; exit 1; }
+
+mkdir -p site secrets backups/database backups/files
+
+# Generate DB passwords on first run so `compose up` cannot fail on missing secrets.
+for f in secrets/mysql_root_password.txt secrets/mysql_wordpress_password.txt; do
+  [ -s "$f" ] || openssl rand -base64 36 | tr -d '\n' > "$f"
+done
+
+touch secrets/cloudflare_tunnel_token.txt
+
+# secrets/ is 700 so other host users cannot reach the files at all. The
+# WordPress DB password itself must be 644: wp-config.php reads it on every
+# request as www-data (uid 33) inside the container.
+chmod 700 secrets
+chmod 600 secrets/*.txt
+chmod 644 secrets/mysql_wordpress_password.txt
+
+# No token yet: run local-only rather than leaving cloudflared crash-looping.
+if [ -s secrets/cloudflare_tunnel_token.txt ]; then
+  docker compose up -d --build
+else
+  echo "No tunnel token in secrets/cloudflare_tunnel_token.txt — starting without cloudflared."
+  echo "Publish via an existing tunnel (route it to http://localhost:${LOCAL_HTTP_PORT:-?}),"
+  echo "or paste a token into that file and re-run ./bin/start to give this site its own."
+  docker compose up -d --build db wordpress nginx
+fi
+
+docker compose ps

@@ -1,0 +1,58 @@
+server {
+    listen 80;
+    listen [::]:80;
+
+    server_name ${WP_DOMAIN};
+
+    root /var/www/html;
+    index index.php index.html;
+
+    client_max_body_size ${PHP_UPLOAD_LIMIT};
+
+    charset utf-8;
+
+    location / {
+        try_files $uri $uri/ /index.php?$args;
+    }
+
+    location ~* /(?:uploads|files)/.*\.php$ {
+        deny all;
+    }
+
+    location = /wp-config.php {
+        deny all;
+    }
+
+    location ~* /(?:\.env|composer\.(?:json|lock)) {
+        deny all;
+    }
+
+    location ~ \.php$ {
+        try_files $uri =404;
+
+        include fastcgi_params;
+
+        fastcgi_pass wordpress:9000;
+        fastcgi_index index.php;
+
+        fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
+        fastcgi_param DOCUMENT_ROOT $document_root;
+
+        fastcgi_param HTTP_HOST $host;
+        fastcgi_param HTTP_X_FORWARDED_HOST $host;
+        fastcgi_param HTTP_X_FORWARDED_PROTO $http_x_forwarded_proto;
+        fastcgi_param HTTP_X_FORWARDED_FOR $proxy_add_x_forwarded_for;
+
+        fastcgi_read_timeout 300;
+    }
+
+    location ~* \.(?:css|js|jpg|jpeg|gif|png|webp|ico|svg|woff|woff2|ttf)$ {
+        expires 7d;
+        access_log off;
+        try_files $uri =404;
+    }
+
+    location ~ /\.(?!well-known).* {
+        deny all;
+    }
+}

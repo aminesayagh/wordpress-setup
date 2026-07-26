@@ -1,0 +1,11 @@
+.env.provision
+
+# Generated sites: each one is a site's live state, not template material.
+sites/
+
+# The blueprint ships clean — these only exist if it was booted directly.
+blueprint/.env
+blueprint/secrets/*.txt
+blueprint/site/
+blueprint/backups/
+__pycache__/

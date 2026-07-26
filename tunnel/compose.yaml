@@ -1,0 +1,29 @@
+name: wp-tunnel
+
+# One tunnel shared by every WordPress site. new-site.py adds a route per site
+# to ./config.yml and restarts this service — you never touch Cloudflare by hand.
+
+services:
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+
+    # Host networking so `http://localhost:<port>` reaches the port each site
+    # publishes on the WSL loopback. Without it the container's localhost would
+    # be its own namespace and every route would 502.
+    network_mode: host
+
+    # Credentials live in ~/.cloudflared, outside this repo. Mounted read-only;
+    # root because the credentials file is 600 and the image runs as nonroot.
+    user: root
+
+    command:
+      - tunnel
+      - --no-autoupdate
+      - --config
+      - /etc/cloudflared/config.yml
+      - run
+
+    volumes:
+      - ./config.yml:/etc/cloudflared/config.yml:ro
+      - ${HOME}/.cloudflared:/etc/cloudflared/creds:ro

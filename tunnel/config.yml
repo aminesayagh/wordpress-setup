@@ -1,0 +1,12 @@
+# Ingress rules for the shared "wordpress" tunnel.
+# new-site.py inserts one rule per site directly above the http_status:404 rule,
+# which must stay last — cloudflared matches top to bottom and 404 is the fallback.
+
+tunnel: 0d9ffa16-68bc-48ca-9f3b-3e5a75824cf9
+credentials-file: /etc/cloudflared/creds/0d9ffa16-68bc-48ca-9f3b-3e5a75824cf9.json
+
+ingress:
+  - hostname: menu-test.masayagh.com
+    service: http://localhost:8081
+
+  - service: http_status:404
