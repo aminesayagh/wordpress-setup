@@ -2,11 +2,14 @@
 # new-site.py inserts one rule per site directly above the http_status:404 rule,
 # which must stay last — cloudflared matches top to bottom and 404 is the fallback.
 
-tunnel: 0d9ffa16-68bc-48ca-9f3b-3e5a75824cf9
-credentials-file: /etc/cloudflared/creds/0d9ffa16-68bc-48ca-9f3b-3e5a75824cf9.json
+tunnel: 52c025bc-6f6f-4f25-9bb0-ac074c04b447
+credentials-file: /etc/cloudflared/creds/52c025bc-6f6f-4f25-9bb0-ac074c04b447.json
 
 ingress:
-  - hostname: demo.masayagh.com
+  - hostname: translangs.masayagh.com
     service: http://localhost:8081
+
+  - hostname: sturdymoto.masayagh.com
+    service: http://localhost:8083
 
   - service: http_status:404

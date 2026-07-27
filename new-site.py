@@ -90,18 +90,22 @@ def tunnel_ports(path):
             re.findall(r"service:\s*https?://(?:localhost|127\.0\.0\.1):(\d+)", text)}
 
 
-def pick_port():
+def pick_port(also_claimed=frozenset()):
     """Lowest free port from FIRST_PORT up.
 
-    Checks ports claimed in sites/*/.env, ports other cloudflared configs already
-    route to, and live binds — so neither a stopped site nor an idle tunnel route
-    gets its port handed to a new site.
+    Checks every port recorded in sites/*/.env, ports other cloudflared configs
+    already route to, and live binds — so neither a stopped site, an idle tunnel
+    route, nor a profile-gated AdminNeo that happens to be down gets its port
+    handed to a new site. `also_claimed` covers ports picked earlier in this run
+    but not yet written to disk.
     """
-    claimed = set()
+    claimed = set(also_claimed)
     for env in SITES.glob("*/.env"):
-        found = re.search(r"^LOCAL_HTTP_PORT=(\d+)", env.read_text(), re.M)
-        if found:
-            claimed.add(int(found.group(1)))
+        text = env.read_text()
+        for key in ("LOCAL_HTTP_PORT", "ADMINNEO_PORT"):
+            found = re.search(rf"^{key}=(\d+)", text, re.M)
+            if found:
+                claimed.add(int(found.group(1)))
     for cfg in [TUNNEL / "config.yml", *OTHER_TUNNEL_CONFIGS]:
         claimed |= tunnel_ports(cfg)
 
@@ -222,6 +226,7 @@ def main():
 
     domain = f"{slug}.{provision['DOMAIN_SUFFIX']}"
     port = pick_port()
+    adminneo_port = pick_port({port})
 
     admin_user = ask("WordPress admin username", "admin")
     admin_pass = getpass.getpass("WordPress admin password [generate]: ").strip()
@@ -248,6 +253,7 @@ def main():
         "SITE_NAME": name,
         "WP_DOMAIN": domain,
         "LOCAL_HTTP_PORT": port,
+        "ADMINNEO_PORT": adminneo_port,
         "HOST_UID": os.getuid(),
         "HOST_GID": os.getgid(),
     })

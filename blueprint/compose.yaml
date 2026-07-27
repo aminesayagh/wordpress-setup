@@ -53,6 +53,11 @@ services:
       # redefined in WORDPRESS_CONFIG_EXTRA below. Empty string = off.
       WORDPRESS_DEBUG: ${WP_DEBUG}
 
+      # off | debug | develop | profile | coverage (comma-separated to combine).
+      # Read directly by Xdebug, so changing it needs only:
+      #   docker compose up -d wordpress
+      XDEBUG_MODE: ${XDEBUG_MODE:-off}
+
       WORDPRESS_CONFIG_EXTRA: |
         define('WP_HOME', 'https://${WP_DOMAIN}');
         define('WP_SITEURL', 'https://${WP_DOMAIN}');
@@ -74,6 +79,7 @@ services:
     volumes:
       - ./site:/var/www/html
       - ./docker/php/custom.ini:/usr/local/etc/php/conf.d/zz-custom.ini:ro
+      - ./docker/php/xdebug.ini:/usr/local/etc/php/conf.d/zzz-xdebug.ini:ro
 
     # wp-config.php re-reads this file on every request as www-data (uid 33),
     # so it must be world-readable. Compose ignores secret uid/gid/mode for
@@ -88,6 +94,12 @@ services:
 
     expose:
       - "9000"
+
+    # Xdebug dials your editor rather than the other way round. On Docker for
+    # Mac/Windows host.docker.internal exists already; on Linux and WSL it has to
+    # be mapped explicitly or the debugger silently never connects.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
     networks:
       - frontend
@@ -117,6 +129,45 @@ services:
 
     networks:
       - frontend
+
+  # Database UI, off unless asked for:
+  #   docker compose --profile tools up -d adminneo
+  #   docker compose --profile tools stop adminneo
+  # Kept out of the default set so it never idles on a live site, and so
+  # bin/start stays a four-service stack.
+  adminneo:
+    image: adminneoorg/adminneo
+    profiles: [tools]
+    restart: unless-stopped
+
+    environment:
+      SITE_NAME: ${SITE_NAME}
+      MYSQL_DATABASE: ${MYSQL_DATABASE}
+      MYSQL_USER: ${MYSQL_USER}
+
+    # Config declares a single server, which makes ExternalLoginPlugin log in
+    # automatically — the URL opens straight into the database, no form.
+    volumes:
+      - ./docker/adminneo/adminneo-config.php:/var/www/html/adminneo-config.php:ro
+      - ./docker/adminneo/adminneo-plugins.php:/var/www/html/adminneo-plugins.php:ro
+
+    # Read at request time by adminneo-config.php, so the password is never
+    # written into a config file.
+    secrets:
+      - mysql_password
+
+    ports:
+      - "127.0.0.1:${ADMINNEO_PORT}:8080"
+
+    depends_on:
+      db:
+        condition: service_healthy
+
+    # backend to reach db; frontend because an internal network has no gateway
+    # and a port cannot be published from it.
+    networks:
+      - frontend
+      - backend
 
   cloudflared:
     image: cloudflare/cloudflared:latest

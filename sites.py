@@ -7,7 +7,9 @@ Lists every site with its status, and starts, closes, or creates one.
 """
 
 import datetime
+import os
 import re
+import shutil
 import subprocess
 import sys
 import zipfile
@@ -16,6 +18,26 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 SITES = ROOT / "sites"
 TUNNEL = ROOT / "tunnel"
+VENV = ROOT / ".venv"
+
+# questionary is the only dependency in the repo. Debian's Python refuses
+# `pip install` outside a virtualenv (PEP 668), so rather than making you set
+# one up, the script owns one and re-execs itself into it on first run.
+# `python3 sites.py` keeps working exactly as before.
+try:
+    import questionary
+except ImportError:                                 # pragma: no cover
+    if os.environ.get("SITES_BOOTSTRAPPED"):
+        sys.exit("questionary is still missing after installing into .venv")
+    python = VENV / "bin" / "python"
+    if not python.exists():
+        print("First run: creating .venv...")
+        subprocess.run([sys.executable, "-m", "venv", str(VENV)], check=True)
+    print("Installing questionary...")
+    subprocess.run([str(python), "-m", "pip", "install", "-q", "questionary"],
+                   check=True)
+    os.environ["SITES_BOOTSTRAPPED"] = "1"
+    os.execv(str(python), [str(python), *sys.argv])
 
 # Regenerable, and big enough to double a backup's size. `.git` is deliberately
 # NOT here: a plugin or theme may be its own repository, and its history is not
@@ -25,6 +47,14 @@ SKIP_IN_BACKUP = {"node_modules", "cache", "upgrade"}
 COLOR = sys.stdout.isatty()
 GREEN, RED, DIM, OFF = ("\033[32m", "\033[31m", "\033[2m", "\033[0m") if COLOR \
     else ("", "", "", "")
+
+STYLE = questionary.Style([
+    ("qmark", "fg:cyan bold"),
+    ("question", "bold"),
+    ("pointer", "fg:cyan bold"),
+    ("highlighted", "fg:cyan bold"),
+    ("answer", "fg:cyan"),
+])
 
 
 def env_value(text, key, default=""):
@@ -56,6 +86,7 @@ def load_sites():
             "name": env_value(text, "SITE_NAME", path.name),
             "domain": env_value(text, "WP_DOMAIN"),
             "port": env_value(text, "LOCAL_HTTP_PORT"),
+            "adminneo_port": env_value(text, "ADMINNEO_PORT"),
             "running": env_value(text, "COMPOSE_PROJECT_NAME",
                                  f"wp-{path.name}") in up,
         })
@@ -66,7 +97,7 @@ def show(sites, up):
     print(f"\n  {'#':<3} {'SITE':<20} {'STATUS':<9} {'PORT':<6} URL")
     print(f"  {DIM}{'-' * 74}{OFF}")
     if not sites:
-        print(f"  {DIM}no sites yet — press (n) to create one{OFF}")
+        print(f"  {DIM}no sites yet — pick 'new site' below{OFF}")
     for i, s in enumerate(sites, 1):
         # Pad the plain label before wrapping it in colour, or the invisible ANSI
         # bytes count toward the field width and the columns drift.
@@ -83,12 +114,26 @@ def show(sites, up):
         print(f"\n  {DIM}shared tunnel:{OFF} {color}{state}{OFF}")
 
 
-def pick(sites, prompt):
-    choice = input(prompt).strip()
-    if not choice.isdigit() or not 1 <= int(choice) <= len(sites):
-        print("  not a listed number")
+def choose(candidates, verb, nothing_to_do):
+    """Arrow-key list of only the sites this action can act on, plus a way out.
+
+    Each action filters first, so `close` never offers a closed site and you are
+    never told a choice was invalid after making it. Esc and Ctrl-C both come
+    back as None, same as picking "back".
+    """
+    if not candidates:
+        print(f"  {nothing_to_do}")
         return None
-    return sites[int(choice) - 1]
+
+    choices = [
+        questionary.Choice(
+            f"{'●' if s['running'] else '○'} {s['name'][:24]:<24} port {s['port']}",
+            value=s)
+        for s in candidates
+    ]
+    choices.append(questionary.Choice("← back", value=None))
+    return questionary.select(f"{verb} which?", choices=choices, style=STYLE,
+                              qmark="›", instruction=" ").ask()
 
 
 def backup(site):
@@ -146,10 +191,90 @@ def backup(site):
     print(f"  wrote backups/{dest.name} ({dest.stat().st_size / 1e6:.1f} MB)")
 
 
+def adminneo_up(site):
+    out = subprocess.run(["docker", "compose", "ps", "--services",
+                          "--filter", "status=running"],
+                         cwd=site["dir"], capture_output=True, text=True)
+    return "adminneo" in out.stdout.split()
+
+
+def database_ui(site):
+    """Toggle the AdminNeo container for this site.
+
+    A toggle rather than a plain start, so the UI does not sit exposed
+    indefinitely after you are done with it — the whole point of the profile.
+    """
+    if not site["adminneo_port"]:
+        print(f"  {RED}no ADMINNEO_PORT in {site['slug']}/.env{OFF} — "
+              f"this site predates the database UI")
+        return
+
+    if adminneo_up(site):
+        print(f"\nStopping the database UI for {site['name']}...")
+        run(["docker", "compose", "--profile", "tools", "stop", "adminneo"],
+            site["dir"])
+        return
+
+    print(f"\nStarting the database UI for {site['name']}...")
+    run(["docker", "compose", "--profile", "tools", "up", "-d", "adminneo"],
+        site["dir"])
+
+    print(f"""
+  http://127.0.0.1:{site['adminneo_port']}      (opens logged in)
+
+  Pick "database UI" again to shut it down.""")
+
+
+def open_folder(site):
+    """Show the site directory in the desktop file manager.
+
+    Under WSL that means Windows Explorer, reached through `explorer.exe` on the
+    interop PATH. It only understands Windows paths, so the directory is passed
+    as the cwd and `.` as the argument — and it exits 1 even when it worked,
+    which is why this does not go through run().
+    """
+    if shutil.which("explorer.exe"):
+        subprocess.run(["explorer.exe", "."], cwd=site["dir"])
+    elif shutil.which("xdg-open"):
+        subprocess.run(["xdg-open", str(site["dir"])])
+    else:
+        print(f"  {RED}no file manager found{OFF} — the site is at {site['dir']}")
+        return
+    print(f"\n  opened {site['dir']}")
+    print(f"  {DIM}WordPress files are under site/, backups under backups/{OFF}")
+
+
+def refresh(site):
+    """Apply configuration changes to a site.
+
+    --build catches Dockerfile edits; --force-recreate is what makes mounted
+    config (php ini, nginx template) and .env values actually take effect — a
+    plain `up -d` sees no change and leaves the old container running. db is left
+    alone; no PHP or nginx setting justifies bouncing the database.
+    """
+    print(f"\nApplying config for {site['name']}...")
+    run(["docker", "compose", "up", "-d", "--build", "--force-recreate",
+         "wordpress", "nginx"], site["dir"])
+
+
 def run(cmd, cwd):
     result = subprocess.run(cmd, cwd=cwd)
     if result.returncode != 0:
         print(f"  {RED}failed:{OFF} {' '.join(str(c) for c in cmd)}")
+
+
+MENU = [
+    ("start",       "▶  start a site"),
+    ("close",       "■  close a site"),
+    ("refresh",     "↻  refresh config"),
+    ("backup",      "⤓  backup"),
+    ("database",    "▤  database UI"),
+    ("folder",      "⌸  open folder"),
+    (None,          questionary.Separator()),
+    ("new",         "+  new site"),
+    ("delete",      "✕  delete a site"),
+    ("quit",        "⏻  quit"),
+]
 
 
 def main():
@@ -157,59 +282,67 @@ def main():
         sites, up = load_sites()
         show(sites, up)
 
-        print(f"\n  (s) start a site   (c) close a site   "
-              f"(b) backup a site   (n) new site   (q) quit")
-        action = input("  > ").strip().lower()
+        choices = [item if key is None else questionary.Choice(item, value=key)
+                   for key, item in MENU]
+        # Ctrl-C and Esc give None, which reads the same as picking quit.
+        action = questionary.select("", choices=choices, style=STYLE,
+                                    qmark="›", instruction=" ").ask()
 
-        if action in ("q", "quit", "exit"):
+        if action in (None, "quit"):
             return
 
-        elif action == "s":
-            if not sites:
-                print("  nothing to start")
-                continue
-            site = pick(sites, "  start which? ")
-            if not site:
-                continue
-            if site["running"]:
-                print(f"  {site['name']} is already started")
-                continue
-            print(f"\nStarting {site['name']}...")
-            run(["./bin/start"], site["dir"])
+        elif action == "start":
+            site = choose([s for s in sites if not s["running"]],
+                          "start", "every site is already started")
+            if site:
+                print(f"\nStarting {site['name']}...")
+                run(["./bin/start"], site["dir"])
 
-        elif action == "c":
-            if not sites:
-                print("  nothing to close")
-                continue
-            site = pick(sites, "  close which? ")
-            if not site:
-                continue
-            if not site["running"]:
-                print(f"  {site['name']} is already closed")
-                continue
-            # bin/stop is `compose down` — containers go, database and files stay.
-            print(f"\nClosing {site['name']}...")
-            run(["./bin/stop"], site["dir"])
+        elif action == "close":
+            site = choose([s for s in sites if s["running"]],
+                          "close", "no site is started")
+            if site:
+                # bin/stop is `compose down` — containers go, data stays.
+                print(f"\nClosing {site['name']}...")
+                run(["./bin/stop"], site["dir"])
 
-        elif action == "b":
-            if not sites:
-                print("  nothing to back up")
-                continue
-            site = pick(sites, "  back up which? ")
-            if not site:
-                continue
-            if not site["running"]:
-                print(f"  {site['name']} is closed — start it first, "
-                      f"the dump comes from the live database")
-                continue
-            backup(site)
+        elif action == "refresh":
+            # Closed sites are offered too: refreshing one brings it back up
+            # with the new config, which is usually what you want.
+            site = choose(sites, "refresh", "no sites yet — pick 'new site'")
+            if site:
+                refresh(site)
 
-        elif action == "n":
+        elif action == "backup":
+            site = choose([s for s in sites if s["running"]], "back up",
+                          "no site is started — a backup reads the live database")
+            if site:
+                backup(site)
+
+        elif action == "database":
+            site = choose([s for s in sites if s["running"]], "open the DB of",
+                          "no site is started — AdminNeo talks to the live database")
+            if site:
+                database_ui(site)
+
+        elif action == "folder":
+            # Closed sites are listed too — the files are on disk either way.
+            site = choose(sites, "open the folder of", "no sites yet")
+            if site:
+                open_folder(site)
+
+        elif action == "new":
             print()
             run([sys.executable, "new-site.py"], ROOT)
 
-        else:
-            print("  pick s, c, b, n, or q")
+        elif action == "delete":
+            # Picking the site is all this does. remove-site.py owns the typed
+            # confirmation and the deletion itself, so the destructive path
+            # stays in exactly one place.
+            site = choose(sites, "DELETE", "no sites yet")
+            if site:
+                print()
+                run([sys.executable, "remove-site.py", site["slug"]], ROOT)
 
 
 if __name__ == "__main__":

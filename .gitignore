@@ -9,3 +9,6 @@ blueprint/secrets/*.txt
 blueprint/site/
 blueprint/backups/
 __pycache__/
+
+# sites.py creates this itself on first run (questionary).
+.venv/

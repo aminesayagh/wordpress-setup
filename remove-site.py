@@ -4,6 +4,10 @@
 Reverses everything that script did: containers and database volume, site files,
 the tunnel ingress rule, and the DNS record.
 
+Everything under the site directory is deleted except backups/, and the directory
+is then renamed to <slug>_deleted_<timestamp>. No backup is taken automatically —
+whatever is already in backups/ is what survives.
+
     python3 remove-site.py [slug]
 
 DNS deletion needs CLOUDFLARE_API_TOKEN in .env.provision (Zone > DNS > Edit on
@@ -11,6 +15,7 @@ masayagh.com). Without it every other step still runs and the record is left for
 you to delete by hand.
 """
 
+import datetime
 import json
 import re
 import shutil
@@ -94,11 +99,34 @@ def drop_ingress(domain):
     return "removed ingress rule and reloaded cloudflared"
 
 
+def strip_site(site_dir):
+    """Delete everything under the site except backups/, then mark it deleted.
+
+    The rename also drops .env, which is what sites.py and this script use to
+    recognise a live site — so a deleted directory stops being listed anywhere.
+    """
+    for entry in site_dir.iterdir():
+        if entry.name == "backups":
+            continue
+        if entry.is_dir() and not entry.is_symlink():
+            shutil.rmtree(entry)
+        else:
+            entry.unlink()
+
+    stamp = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
+    archived = site_dir.with_name(f"{site_dir.name}_deleted_{stamp}")
+    site_dir.rename(archived)
+    return archived
+
+
 def main():
     provision = read_provision()
     suffix = provision["DOMAIN_SUFFIX"]
 
-    available = sorted(p.name for p in SITES.iterdir() if p.is_dir()) \
+    # A live site is one that still has a .env — already-deleted directories keep
+    # their backups but lose everything else, so they are not offered again.
+    available = sorted(p.name for p in SITES.iterdir()
+                       if p.is_dir() and (p / ".env").is_file()) \
         if SITES.is_dir() else []
     if not available:
         fail("no sites to remove")
@@ -113,7 +141,14 @@ def main():
     site_dir = SITES / slug
     domain = f"{slug}.{suffix}"
 
-    print(f"\nThis permanently deletes {site_dir}, its database, and {domain}.")
+    zips = sorted((site_dir / "backups").glob("*.zip")) \
+        if (site_dir / "backups").is_dir() else []
+    print(f"\nThis permanently deletes the database and all files for {slug}, "
+          f"and the DNS record {domain}.")
+    print(f"No backup is taken now — {len(zips)} existing backup(s) in backups/ "
+          f"are kept and the folder is renamed {slug}_deleted_<timestamp>.")
+    if not zips:
+        print("  WARNING: backups/ is empty. Nothing will be recoverable.")
     if input(f"Type '{slug}' to confirm: ").strip() != slug:
         sys.exit("aborted")
 
@@ -129,8 +164,10 @@ def main():
     else:
         print(f"  no CLOUDFLARE_API_TOKEN — delete the {domain} record manually")
 
-    shutil.rmtree(site_dir)
-    print(f"  removed {site_dir}")
+    archived = strip_site(site_dir)
+    kept = len(list((archived / "backups").glob("*.zip")))
+    print(f"  deleted all files, kept backups/ ({kept} zip(s))")
+    print(f"  renamed to sites/{archived.name}")
     print(f"\n{slug} is gone.")
 
 

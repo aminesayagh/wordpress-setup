@@ -23,6 +23,14 @@ RUN for b in mariadb mariadb-check mariadb-dump mysql mysqlcheck mysqldump; do \
         && chmod +x "/usr/local/bin/$b"; \
     done
 
+# Xdebug is always compiled in, but does nothing unless XDEBUG_MODE says so.
+# Xdebug 3 reads that environment variable itself, so switching a site between
+# off and debug is an .env edit plus a container restart — no rebuild — and
+# mode=off leaves no measurable overhead.
+RUN pecl install xdebug \
+    && docker-php-ext-enable xdebug \
+    && rm -rf /tmp/pear
+
 # Align www-data with the host user so files PHP-FPM writes into the bind-mounted
 # ./site stay editable from WSL. Avoids the setfacl dance on every new site.
 ARG HOST_UID=1000
