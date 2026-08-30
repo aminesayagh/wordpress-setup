@@ -211,7 +211,11 @@ def database_ui(site):
 
     if adminneo_up(site):
         print(f"\nStopping the database UI for {site['name']}...")
-        run(["docker", "compose", "--profile", "tools", "stop", "adminneo"],
+        # rm, not stop: a stopped-but-present container can outlive the network
+        # it was attached to (e.g. if the site is later closed and reopened),
+        # leaving a stale network reference that fails on the next start.
+        # Stateless besides read-only config mounts, so removal costs nothing.
+        run(["docker", "compose", "--profile", "tools", "rm", "-s", "-f", "adminneo"],
             site["dir"])
         return
 
