@@ -12,4 +12,7 @@ ingress:
   - hostname: sturdymoto.masayagh.com
     service: http://localhost:8083
 
+  - hostname: test-lab.masayagh.com
+    service: http://localhost:8085
+
   - service: http_status:404
